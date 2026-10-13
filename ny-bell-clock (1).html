@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>NY Bell Clock</title>
+<style>
+:root{--bg:#0e1116;--card:#171b22;--fg:#e8ebf0;--mut:#8b94a3;--acc:#4ade80;--ring:#fbbf24;--bd:#262c36;
+box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme: light){:root:not([data-theme="dark"]){--bg:#f4f5f7;--card:#fff;--fg:#14171c;--mut:#667085;--acc:#15803d;--ring:#d97706;--bd:#dfe3e8}}
+:root[data-theme="dark"]{--bg:#0e1116;--card:#171b22;--fg:#e8ebf0;--mut:#8b94a3;--acc:#4ade80;--ring:#fbbf24;--bd:#262c36}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;min-height:100vh;display:flex;justify-content:center;padding:20px}
+main{width:100%;max-width:480px;display:flex;flex-direction:column;gap:14px}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:16px;padding:20px;text-align:center;transition:border-color .3s,box-shadow .3s}
+.card.ring{border-color:var(--ring);box-shadow:0 0 0 4px color-mix(in srgb,var(--ring) 30%,transparent)}
+.lbl{font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--mut)}
+.num{font-variant-numeric:tabular-nums;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-weight:600}
+#ny{font-size:34px;margin-top:6px}
+#cd{font-size:64px;margin:6px 0;color:var(--acc)}
+.card.ring #cd{color:var(--ring)}
+#nextlbl{color:var(--mut);font-size:14px}
+.slots{display:flex;gap:8px}
+.slot{flex:1;border:1px solid var(--bd);border-radius:12px;padding:10px 4px;background:var(--card);text-align:center;cursor:pointer;user-select:none}
+.slot .t{font-size:20px}.slot .s{font-size:11px;color:var(--mut);margin-top:2px}
+.slot.next{border-color:var(--acc)}.slot.done{opacity:.45}.slot.off{opacity:.3;text-decoration:line-through}
+.row{display:flex;gap:8px;align-items:center;justify-content:center;flex-wrap:wrap}
+button{background:var(--acc);color:#000;border:0;border-radius:10px;padding:12px 18px;font-size:15px;font-weight:600;cursor:pointer}
+button.sec{background:transparent;color:var(--fg);border:1px solid var(--bd)}
+input[type=range]{width:120px}
+.note{font-size:12px;color:var(--mut);line-height:1.5;text-align:center}
+</style>
+</head>
+<body>
+<main>
+  <div class="card"><div class="lbl">New York time</div><div id="ny" class="num">--:--:--</div></div>
+  <div class="card" id="box">
+    <div class="lbl" id="nextlbl">Next bell</div>
+    <div id="cd" class="num">--:--:--</div>
+    <div id="local" class="lbl"></div>
+  </div>
+  <div class="slots" id="slots"></div>
+  <div class="row">
+    <button id="arm">🔔 Turn sound on</button>
+    <button class="sec" id="test">Test bell</button>
+    <label class="lbl">Vol <input type="range" id="vol" min="0" max="1" step="0.05" value="0.7"></label>
+  </div>
+  <div class="row"><label class="lbl"><input type="checkbox" id="warn" checked> 5-min warning (chime + voice)</label></div>
+  <div class="row"><button class="sec" id="tv">Test voice</button><button class="sec" id="t20">Test in 20s (switch tabs!)</button></div>
+  <div class="note">Bells: 9:30, 9:45 and 10:00 NY time, Mon–Fri. Tap a time to mute just that one.<br>
+  Tap once to allow sound. Bells and chimes are queued on the audio clock so they still ring while this tab is in the background. Keep the tab open.</div>
+</main>
+<script>
+const TIMES=[[9,30],[9,45],[10,0]];
+const TZ='America/New_York';
+const fmt=new Intl.DateTimeFormat('en-US',{timeZone:TZ,hour12:false,year:'numeric',month:'numeric',day:'numeric',hour:'numeric',minute:'numeric',second:'numeric'});
+const fmtLocal=new Intl.DateTimeFormat('en-GB',{timeZone:'Europe/Amsterdam',hour:'2-digit',minute:'2-digit',hour12:false});
+const pad=n=>String(n).padStart(2,'0');
+const hms=s=>pad(Math.floor(s/3600))+':'+pad(Math.floor(s%3600/60))+':'+pad(s%60);
+
+function parts(ms){const o={};fmt.formatToParts(new Date(ms)).forEach(p=>o[p.type]=p.value);
+  return{y:+o.year,m:+o.month,d:+o.day,h:+o.hour%24,mi:+o.minute,s:+o.second};}
+function nyToEpoch(y,m,d,h,mi){const want=Date.UTC(y,m-1,d,h,mi);let g=want;
+  for(let i=0;i<2;i++){const p=parts(g);g-=Date.UTC(p.y,p.m-1,p.d,p.h,p.mi,p.s)-want;}return g;}
+function slotsForDay(base){ // base: Date.UTC(y,m-1,d)
+  const dt=new Date(base),wd=dt.getUTCDay();if(wd===0||wd===6)return[];
+  return TIMES.map(([h,mi],i)=>({i,e:nyToEpoch(dt.getUTCFullYear(),dt.getUTCMonth()+1,dt.getUTCDate(),h,mi)}));}
+function nextTarget(now,muted){const p=parts(now);
+  for(let k=0;k<10;k++){for(const s of slotsForDay(Date.UTC(p.y,p.m-1,p.d+k)))
+    if(s.e>now&&!muted[s.i])return s;}return null;}
+
+let muted=[false,false,false],ctx=null,master=null,armed=false,scheduled=new Set(),ringUntil=0,lastRung=-1,wake=null;
+try{muted=JSON.parse(localStorage.getItem('muted'))||muted;}catch(e){}
+const slotsEl=document.getElementById('slots');
+TIMES.forEach(([h,mi],i)=>{const d=document.createElement('div');d.className='slot';d.id='s'+i;
+  d.innerHTML='<div class="t num">'+h+':'+pad(mi)+'</div><div class="s"></div>';
+  d.onclick=()=>{muted[i]=!muted[i];try{localStorage.setItem('muted',JSON.stringify(muted));}catch(e){}};
+  slotsEl.appendChild(d);});
+
+function ensureCtx(){if(!ctx){ctx=new (window.AudioContext||window.webkitAudioContext)();master=ctx.createGain();master.connect(ctx.destination);}
+  master.gain.value=+document.getElementById('vol').value;if(ctx.state!=='running')ctx.resume();}
+function bell(when,dest,base){ dest=dest||master;base=base||660;
+  const ratios=[1,2.76,5.4,8.93],amps=[.6,.3,.15,.07];
+  ratios.forEach((r,k)=>{const o=ctx.createOscillator(),g=ctx.createGain();
+    o.type='sine';o.frequency.value=base*r;
+    g.gain.setValueAtTime(0,when);g.gain.linearRampToValueAtTime(amps[k],when+.01);
+    g.gain.exponentialRampToValueAtTime(.0001,when+3.2/(1+k*.5));
+    o.connect(g);g.connect(dest);o.start(when);o.stop(when+3.3);});}
+
+document.getElementById('arm').onclick=async()=>{
+  if(!armed){ensureCtx();armed=true;bell(ctx.currentTime+.05);keepAlive();
+    try{wake=await navigator.wakeLock.request('screen');}catch(e){}}
+  else{armed=false;gates.forEach(a=>{try{a.g.disconnect();}catch(e){}});gates.clear();try{wake&&wake.release();}catch(e){}}
+  paintArm();};
+document.getElementById('test').onclick=()=>{ensureCtx();bell(ctx.currentTime+.05);};
+document.getElementById('vol').oninput=()=>{if(master)master.gain.value=+document.getElementById('vol').value;};
+function paintArm(){const b=document.getElementById('arm');b.textContent=armed?'🔕 Sound on — tap to stop':'🔔 Turn sound on';b.className=armed?'sec':'';}
+document.addEventListener('visibilitychange',async()=>{if(armed&&document.visibilityState==='visible'){try{wake=await navigator.wakeLock.request('screen');}catch(e){}}});
+
+const gates=new Map(),spoken=new Set(),SAY=['nine thirty','nine forty-five',"ten o'clock"];let ka=null;
+function keepAlive(){if(ka||!ctx)return;ka=ctx.createOscillator();const g=ctx.createGain();g.gain.value=0.0015;ka.frequency.value=40;ka.connect(g);g.connect(ctx.destination);ka.start();}
+function speakWarn(i){try{const u=new SpeechSynthesisUtterance('Five minutes until '+SAY[i]);u.lang='en-US';u.volume=+document.getElementById('vol').value;speechSynthesis.cancel();speechSynthesis.speak(u);}catch(err){}}
+function scheduleAhead(){
+  if(!armed||!ctx)return;
+  const now=Date.now(),p=parts(now),warn=document.getElementById('warn').checked,live=new Set();
+  for(let k=0;k<3;k++)for(const s of slotsForDay(Date.UTC(p.y,p.m-1,p.d+k))){
+    if(muted[s.i])continue;
+    if(warn&&now>=s.e-298800&&now<s.e-270000&&!spoken.has(s.e)){spoken.add(s.e);speakWarn(s.i);}
+    if(s.e<=now)continue;
+    for(const kind of warn?['bell','warn']:['bell']){
+      const at=kind==='bell'?s.e:s.e-300000;
+      if(at<=now)continue;
+      const key=s.e+kind;live.add(key);
+      if(gates.has(key))continue;
+      const g=ctx.createGain();g.connect(master);gates.set(key,{g,at});
+      const when=ctx.currentTime+(at-now)/1000;
+      if(kind==='bell')bell(when,g);else{bell(when,g,880);bell(when+.45,g,1175);}
+      if(kind==='bell')setTimeout(()=>{ringUntil=Date.now()+4000;},at-now);
+    }
+  }
+  for(const [key,a] of gates)if(!live.has(key)){
+    if(a.at>now){try{a.g.disconnect();}catch(e){}gates.delete(key);}
+    else if(a.at<now-8000)gates.delete(key);
+  }
+}
+document.getElementById('tv').onclick=()=>speakWarn(1);
+document.getElementById('t20').onclick=()=>{ensureCtx();keepAlive();bell(ctx.currentTime+20);setTimeout(()=>speakWarn(1),21500);};
+document.addEventListener('visibilitychange',()=>{if(armed&&ctx&&ctx.state!=='running')ctx.resume();});
+function tick(){
+  scheduleAhead();
+  const now=Date.now(),p=parts(now);
+  document.getElementById('ny').textContent=pad(p.h)+':'+pad(p.mi)+':'+pad(p.s);
+  const t=nextTarget(now,muted);
+  const box=document.getElementById('box');
+  if(t){
+    const secs=Math.ceil((t.e-now)/1000);
+    document.getElementById('cd').textContent=hms(secs);
+    const [h,mi]=TIMES[t.i];
+    const sameDay=secs<86400&&slotsForDay(Date.UTC(p.y,p.m-1,p.d)).some(s=>s.e===t.e);
+    document.getElementById('nextlbl').textContent='Next bell: '+h+':'+pad(mi)+' NY'+(sameDay?'':' (next trading day)');
+    document.getElementById('local').textContent='Rotterdam: '+fmtLocal.format(new Date(t.e));
+    if(false){scheduled.add(t.e);
+      const delay=Math.max(0,(t.e-Date.now())/1000);bell(ctx.currentTime+delay);
+      setTimeout(()=>{ringUntil=Date.now()+4000;lastRung=t.i;},delay*1000);}
+  }else{document.getElementById('cd').textContent='--:--:--';document.getElementById('nextlbl').textContent='All bells muted';document.getElementById('local').textContent='';}
+  box.classList.toggle('ring',now<ringUntil);
+  // slot chips for today
+  const today=slotsForDay(Date.UTC(p.y,p.m-1,p.d));
+  TIMES.forEach((_,i)=>{const el=document.getElementById('s'+i),s=today.find(x=>x.i===i);
+    el.className='slot'+(muted[i]?' off':'')+(t&&t.i===i&&s&&s.e===t.e?' next':'')+(s&&s.e<=now?' done':'');
+    el.querySelector('.s').textContent=muted[i]?'muted':!s?'weekend':s.e<=now?'passed':(t&&s&&s.e===t.e?'next':'');});
+  if(scheduled.size>20)scheduled=new Set([...scheduled].slice(-5));
+}
+setInterval(tick,250);tick();paintArm();
+</script>
+</body>
+</html>
